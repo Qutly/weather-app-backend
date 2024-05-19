@@ -90,27 +90,42 @@ app.post("/register", async (req, res) => {
 
     connection.query('SELECT COUNT(*) AS emailCount FROM Użytkownik WHERE Email = ? OR NazwaUżytkownika = ?', [email, username], (error, results) => {
         if (error) {
-            res.status(500).json("Server error");
-            return;
+            return res.status(500).json("Server error");
         }
         
         const { emailCount } = results[0];
 
         if (emailCount > 0) {
-            res.status(409).json("Email or username already exists");
-            return;
+            return res.status(409).json("Email or username already exists");
         }
 
         connection.query('INSERT INTO Użytkownik (NazwaUżytkownika, Email, Hasło) VALUES (?, ?, ?)',
             [username, email, hashedPassword],
-            (error) => {
+            (error, results) => {
                 if (error) {
                     return res.status(400).json("Error during user registration");
                 }
-
-                return res.status(200).json("Success");
-            });
+                
+                const userId = results.insertId;
+                connection.query('SELECT IdUrządzenia FROM Stacja_Pomiarowa', (error, stations) => {
+                    if(error) {
+                    return res.status(500).json("Error fetching stations");
+                }
+                
+                const stationIds = stations.map(station => station.IdUrządzenia);
+                const insertValues = stationIds.map(stationId => [userId, stationId]);
+                
+                insertValues.map(item => {
+                    connection.query('INSERT INTO Interesująca_Stacja (UżytkownikIdUżytkownika, StacjaPomiarowaIdUrządzenia) VALUES (?, ?)', [item[0], item[1]], (error) => {
+                        if(error) {
+                            return res.status(500).json("Error inserting user's interesting stations");
+                        }
+                    })
+                })
+            })
+        });
     });
+    return res.status(200).json("Success");
 });
 
 app.post("/login", passport.authenticate("local"), (req, res) => {
@@ -158,18 +173,56 @@ app.get("/get_users", (req, res) => {
 });
 
 app.post("/add_station", (req, res) => {
-
     const { stationName, country, city, address, lat, long } = req.body;
 
-    connection.query('INSERT INTO Stacja_Pomiarowa (NazwaStacji, Kraj, Miasto, Adres, Koordynata_x, Koordyanta_y) VALUES (?, ?, ?, ?, ?, ?)', 
-        [stationName, country, city, address, lat, long],
-        (error) => {
-            if(error) {
-                return res.status(400).json("Error during inserting station");
-            }
-            return res.status(200).json("Succesfully inserted station");
-        })
-})
+    connection.beginTransaction((err) => {
+        if (err) {
+            return res.status(500).json("Error starting transaction");
+        }
+
+        connection.query('INSERT INTO Stacja_Pomiarowa (NazwaStacji, Kraj, Miasto, Adres, Koordynata_x, Koordyanta_y) VALUES (?, ?, ?, ?, ?, ?)',
+            [stationName, country, city, address, lat, long],
+            (error, results) => {
+                if (error) {
+                    return connection.rollback(() => {
+                        res.status(400).json("Error during inserting station");
+                    });
+                }
+
+                const newStationId = results.insertId;
+
+                connection.query('SELECT IdUżytkownika FROM Użytkownik', (error, userResults) => {
+                    if (error) {
+                        return connection.rollback(() => {
+                            res.status(400).json("Error fetching user IDs");
+                        });
+                    }
+
+                    const userIds = userResults.map(user => user.IdUżytkownika);
+
+                    const values = userIds.map(userId => [userId, newStationId]);
+
+                    connection.query('INSERT INTO Interesująca_Stacja (UżytkownikIdUżytkownika, StacjaPomiarowaIdUrządzenia) VALUES ?', [values], (error) => {
+                        if (error) {
+                            return connection.rollback(() => {
+                                res.status(400).json("Error inserting into Interesująca_Stacja");
+                            });
+                        }
+
+                        connection.commit((err) => {
+                            if (err) {
+                                return connection.rollback(() => {
+                                    res.status(500).json("Error committing transaction");
+                                });
+                            }
+
+                            return res.status(200).json("Successfully inserted station and updated users' interesting stations");
+                        });
+                    });
+                });
+            });
+    });
+});
 
 app.post("/remove_station", (req, res) => {
     const { id, name, password } = req.body;
@@ -207,7 +260,6 @@ app.post("/remove_station", (req, res) => {
 
 app.post("/block_user", (req, res) => {
     const { userId } = req.body;
-    console.log(userId)
     connection.query('UPDATE Użytkownik SET Zablokowany = ? WHERE IdUżytkownika = ?', [true, userId], (error, results) => {
         if (error) {
             return res.status(500).json('Internal Server Error');
@@ -220,6 +272,16 @@ app.post("/block_user", (req, res) => {
         else {
             return res.status(200).json('User blocked successfully');
         }
+    });
+});
+
+app.post("/get_prefered_stations", (req, res) => {
+    const { id } = req.body;
+    connection.query('SELECT StacjaPomiarowaIdUrządzenia, Preferowana FROM Interesująca_Stacja WHERE UżytkownikIdUżytkownika = ?', [id], (error, results) => {
+        if (error) {
+            return res.status(500).json("Error fetching preferred stations");
+        }
+        return res.status(200).json(results);
     });
 });
 
@@ -240,17 +302,39 @@ app.post("/rank_user", (req, res) => {
 })
 
 app.post("/upload", (req, res) => {
-    
-    const { id, temperature, humidity, pressure } = req.body;
-    
+    const { id, temperature, humidity, pressure, stationList } = req.body;
+
     connection.query('UPDATE Użytkownik SET czyTemperatura = ?, czyWilgotność = ?, czyCiśnienie = ? WHERE IdUżytkownika = ?',
         [temperature, humidity, pressure, id],
         (updateError, updateResults) => {
-            if (updateError) {;
+            if (updateError) {
                 res.status(500).json('Internal Server Error');
                 return;
             }
-            return res.status(200).json('Settings updated successfully');
+
+            stationList.map(station => {
+                connection.query('UPDATE Interesująca_Stacja SET Preferowana = ? WHERE UżytkownikIdUżytkownika = ? AND StacjaPomiarowaIdUrządzenia = ?',
+                    [station.Preferowana, id, station.StacjaPomiarowaIdUrządzenia], (error, results) => {
+                        if (error) {
+                            return console.error('Error updating preferred stations:', error);
+                        }
+                    });
+            });
+        });
+    return res.status(200).json('Settings updated successfully');
+});
+
+app.post("/get_measurement", async (req, res) => {
+    const { id } = req.body;
+
+    connection.query('SELECT * FROM Dana_Pomiarowa WHERE StacjaPomiarowaIdUrządzenia = ?', [id], (error, results) => {
+        if (error) {
+            return res.status(500).json("Internal Server Error");
+        }
+        if (results.length === 0) {
+            return res.status(404).json("No data found for the given station ID");
+        }
+        return res.status(200).json(results);
     });
 });
 
