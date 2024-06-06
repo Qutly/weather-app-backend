@@ -1,9 +1,9 @@
 import mysql from "mysql2";
 
 const connection = mysql.createConnection({
-    host: "35.233.21.73",
+    host: "35.205.167.196",
     user: "root",
-    password: "LFzEQ{}Pj:sT@y_U",
+    password: ";kA_LY<$oEH4FEux",
     port: 3306,
     database: "weather-database"
 })
