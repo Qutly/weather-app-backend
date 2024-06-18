@@ -125,11 +125,11 @@ app.post("/register", async (req, res) => {
             })
         });
     });
-    return res.status(200).json("Success");
+    return res.status(200).json();
 });
 
 app.post("/login", passport.authenticate("local"), (req, res) => {
-    return res.status(200).json("Successfully logged in");
+    return res.status(200).json();
 });
 
 app.get("/user", (req, res) => {
@@ -226,41 +226,68 @@ app.post("/add_station", (req, res) => {
 
 app.post("/remove_station", (req, res) => {
     const { id, name, password } = req.body;
+
     connection.query('SELECT * FROM Użytkownik WHERE IdUżytkownika = ?', [id], (error, results) => {
         if (error) {
             return res.status(500).json('Wystąpił błąd podczas przetwarzania żądania');
-        } else {
-            if (results.length === 0) {
-                return res.status(404).json('Nie znaleziono użytkownika o podanym id');
-            } else {
-                const user = results[0];
-                if (!user.Admin) {
-                    return res.status(403).json('Brak uprawnień administratora');
-                } else {
-                    bcrypt.compare(password, user.Hasło, (bcryptErr, isMatch) => {
-                        if (bcryptErr) {
-                            return res.status(500).json('Wystąpił błąd podczas przetwarzania żądania');
-                        } else if (!isMatch) {
-                            return res.status(401).json('Nieprawidłowe hasło');
-                        } else {
-                            connection.query('DELETE FROM Stacja_Pomiarowa WHERE NazwaStacji = ?', [name], (deleteError, deleteResult) => {
-                                if (deleteError) {
-                                    return res.status(500).json('Wystąpił błąd podczas usuwania stacji pomiarowej');
-                                } else {
-                                    return res.status(200).json('Stacja pomiarowa została pomyślnie usunięta');
-                                }
-                            });
-                        }
-                    });
-                }
-            }
         }
+        if (results.length === 0) {
+            return res.status(404).json('Nie znaleziono użytkownika o podanym id');
+        }
+
+        const user = results[0];
+        if (!user.Admin) {
+            return res.status(403).json('Brak uprawnień administratora');
+        }
+
+        bcrypt.compare(password, user.Hasło, (bcryptErr, isMatch) => {
+            if (bcryptErr) {
+                return res.status(500).json('Wystąpił błąd podczas przetwarzania żądania');
+            }
+            if (!isMatch) {
+                return res.status(401).json('Nieprawidłowe hasło');
+            }
+
+            connection.query('SELECT * FROM Stacja_Pomiarowa WHERE NazwaStacji = ?', [name], (stationError, stationResults) => {
+                if (stationError) {
+                    return res.status(500).json('Wystąpił błąd podczas przetwarzania żądania');
+                }
+                if (stationResults.length === 0) {
+                    return res.status(404).json('Nie znaleziono stacji pomiarowej o podanej nazwie');
+                }
+
+                connection.query('DELETE FROM Stacja_Pomiarowa WHERE NazwaStacji = ?', [name], (deleteError, deleteResult) => {
+                    if (deleteError) {
+                        return res.status(500).json('Wystąpił błąd podczas usuwania stacji pomiarowej');
+                    }
+                    return res.status(200).json('Stacja pomiarowa została pomyślnie usunięta');
+                });
+            });
+        });
     });
 });
+
 
 app.post("/block_user", (req, res) => {
     const { userId } = req.body;
     connection.query('UPDATE Użytkownik SET Zablokowany = ? WHERE IdUżytkownika = ?', [true, userId], (error, results) => {
+        if (error) {
+            return res.status(500).json('Internal Server Error');
+        }
+
+        if (results.affectedRows === 0) {
+            return res.status(404).json('User not found');
+        } 
+
+        else {
+            return res.status(200).json('User blocked successfully');
+        }
+    });
+});
+
+app.post("/unlock_user", (req, res) => {
+    const { userId } = req.body;
+    connection.query('UPDATE Użytkownik SET Zablokowany = ? WHERE IdUżytkownika = ?', [false, userId], (error, results) => {
         if (error) {
             return res.status(500).json('Internal Server Error');
         }
@@ -289,6 +316,22 @@ app.post("/rank_user", (req, res) => {
     const { id } = req.body;
 
     connection.query('UPDATE Użytkownik SET Admin = ? WHERE IdUżytkownika = ?', [true, id], (error, results) => {
+        if (error) {
+            return res.status(500).json('Internal Server Error');
+        }
+
+        if (results.affectedRows === 0) {
+            return res.status(404).json('User not found');
+        }
+
+        return res.status(200).json('User ranked successfully');
+    });
+})
+
+app.post("/degrade_user", (req, res) => {
+    const { id } = req.body;
+
+    connection.query('UPDATE Użytkownik SET Admin = ? WHERE IdUżytkownika = ?', [false, id], (error, results) => {
         if (error) {
             return res.status(500).json('Internal Server Error');
         }
